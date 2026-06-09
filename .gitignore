@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Environment — NEVER commit real credentials
+.env
+
+# Database & logs
+detections.db
+*.log
+weapon_log.txt
+sentinel.log
+
+# Alert screenshots
+alerts/
+
+# Node
+sentinel-dashboard/node_modules/
+sentinel-dashboard/dist/
+sentinel-dashboard/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/settings.json
+.idea/
+*.suo
