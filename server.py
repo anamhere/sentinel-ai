@@ -1,6 +1,7 @@
 import cv2
 import sqlite3
 import os
+import sys
 import threading
 import time
 import smtplib
@@ -19,7 +20,17 @@ from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 import torch
-import winsound
+
+# ─────────────────────────────────────────────
+# Cross-platform beep (Windows only, silent on Linux/cloud)
+# ─────────────────────────────────────────────
+def _beep():
+    try:
+        if sys.platform == "win32":
+            import winsound
+            winsound.Beep(1800, 350)
+    except Exception:
+        pass
 
 # ─────────────────────────────────────────────
 # Globals
@@ -135,10 +146,6 @@ def clear_old_data():
 # NMS helper — removes overlapping boxes
 # ─────────────────────────────────────────────
 def apply_nms(boxes, iou_threshold=0.40):
-    """
-    boxes: list of (x1, y1, x2, y2, conf)
-    Returns filtered list with overlapping boxes removed.
-    """
     if not boxes:
         return []
     boxes_sorted = sorted(boxes, key=lambda b: b[4], reverse=True)
@@ -148,7 +155,6 @@ def apply_nms(boxes, iou_threshold=0.40):
         kept.append(best)
         remaining = []
         for b in boxes_sorted:
-            # compute IoU
             ix1 = max(best[0], b[0]); iy1 = max(best[1], b[1])
             ix2 = min(best[2], b[2]); iy2 = min(best[3], b[3])
             inter = max(0, ix2-ix1) * max(0, iy2-iy1)
@@ -175,7 +181,9 @@ async def lifespan(app: FastAPI):
     model(dummy, imgsz=416, verbose=False)
     model(dummy, imgsz=416, verbose=False)
     print(f"[STARTUP] Model ready on {device.upper()} ✓")
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    # Use CAP_DSHOW on Windows, default on Linux
+    backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_V4L2
+    cap = cv2.VideoCapture(0, backend)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS,          30)
@@ -214,16 +222,13 @@ def draw_detection(frame, x1, y1, x2, y2, conf):
     WHITE = (255, 255, 255)
     BLACK = (0, 0, 0)
 
-    # Bounding box
     cv2.rectangle(frame, (x1, y1), (x2, y2), RED, 2)
 
-    # Corner brackets
     arm, t = 20, 3
     for (cx, cy, sx, sy) in [(x1,y1,1,1),(x2,y1,-1,1),(x1,y2,1,-1),(x2,y2,-1,-1)]:
-        cv2.line(frame, (cx, cy), (cx + sx*arm, cy),       WHITE, t)
+        cv2.line(frame, (cx, cy), (cx + sx*arm, cy),        WHITE, t)
         cv2.line(frame, (cx, cy), (cx,           cy+sy*arm), WHITE, t)
 
-    # Tight pulsing circle at weapon centre only
     cx_w = int((x1 + x2) / 2)
     cy_w = int((y1 + y2) / 2)
     box_short = min(x2-x1, y2-y1)
@@ -233,7 +238,6 @@ def draw_detection(frame, x1, y1, x2, y2, conf):
     cv2.circle(frame, (cx_w, cy_w), 4, RED, -1)
     cv2.circle(frame, (cx_w, cy_w), 4, WHITE, 1)
 
-    # Label above box
     label  = f"WEAPON DETECTED  {conf*100:.0f}%"
     font   = cv2.FONT_HERSHEY_DUPLEX
     fscale = 0.70
@@ -289,12 +293,10 @@ def camera_capture():
 
 # ─────────────────────────────────────────────
 # Detection thread
-# CONF = 0.55  — strict weapon-only, no false positives
-# NMS  applied — removes overlapping duplicate boxes
 # ─────────────────────────────────────────────
-CONF_THRESHOLD = 0.55   # raised: only high-confidence weapon hits
-MIN_BOX_PX     = 35     # ignore tiny noise blobs
-VISIBILITY_WIN = 0.45   # keep box visible 450 ms after last confirmed hit
+CONF_THRESHOLD = 0.55
+MIN_BOX_PX     = 35
+VISIBILITY_WIN = 0.45
 
 def detection_loop():
     global latest_frame, processed_frame
@@ -317,19 +319,15 @@ def detection_loop():
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 w_box = x2 - x1
                 h_box = y2 - y1
-                # Skip tiny blobs
                 if w_box < MIN_BOX_PX or h_box < MIN_BOX_PX: continue
-                # Skip boxes that are implausibly large (>80% of frame) — usually false positives
                 fh, fw = frame.shape[:2]
                 if w_box > fw * 0.80 or h_box > fh * 0.80: continue
-                # Aspect ratio filter: weapons are rarely perfect squares or extreme
                 aspect = w_box / h_box if h_box > 0 else 0
                 if aspect < 0.10 or aspect > 12.0: continue
                 raw_boxes.append((x1, y1, x2, y2, conf))
         except Exception as e:
             print(f"[YOLO] {e}")
 
-        # Apply NMS to remove overlapping detections
         boxes = apply_nms(raw_boxes, iou_threshold=0.40)
 
         if boxes:
@@ -343,7 +341,6 @@ def detection_loop():
             (time.time() - last_detection_time) < VISIBILITY_WIN
         )
 
-        # Draw
         if detection_visible:
             for (x1, y1, x2, y2, conf) in last_boxes:
                 frame = draw_detection(frame, x1, y1, x2, y2, conf)
@@ -353,7 +350,6 @@ def detection_loop():
             if heatmap is not None:
                 heatmap.__imul__(0.94)
 
-        # Save alert (throttle: once per 5 s)
         if detection_visible and boxes and (time.time() - last_save_time) > 5:
             last_save_time = time.time()
             alert_count   += 1
@@ -373,7 +369,7 @@ def detection_loop():
                     conn.commit(); cur.close()
             except Exception as e:
                 print(f"[DB] {e}")
-            threading.Thread(target=lambda: winsound.Beep(1800, 350), daemon=True).start()
+            threading.Thread(target=_beep, daemon=True).start()
             threading.Thread(target=send_email, args=(filename, save_conf), daemon=True).start()
             print(f"[ALERT #{alert_count}] WEAPON | CONF={save_conf:.2f}")
 
