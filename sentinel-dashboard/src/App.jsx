@@ -1,7 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// ── URL constants ────────────────────────────────────────────────────────────
+// API calls (stats, history, alerts, logs) can go through Vite proxy OR direct.
+// MJPEG stream MUST go direct to the backend — never through Vite proxy, which
+// buffers the multipart stream and causes visible lag / freezing.
+const API_BASE    = import.meta.env.VITE_API_URL  || "";          // "" = use Vite proxy
+const STREAM_BASE = import.meta.env.VITE_STREAM_URL
+                 || import.meta.env.VITE_API_URL
+                 || "http://localhost:8000";                        // always direct
 
 export default function App() {
   const [stats, setStats]         = useState({ alerts: 0, avg_conf: 0, uptime: 0, status: "CONNECTING" });
@@ -14,38 +21,56 @@ export default function App() {
   const [toastType, setToastType] = useState("ok");
   const [streamError, setStreamError] = useState(false);
   const [refreshing, setRefreshing]   = useState(false);
-  const [streamKey, setStreamKey]     = useState(0); // force re-mount stream
+  const [streamKey, setStreamKey]     = useState(0);
+
   const prevAlerts = useRef(0);
   const logsRef    = useRef(null);
   const toastTimer = useRef(null);
 
-  const showToast = (msg, type = "ok", ms = 3000) => {
+  // ── Toast helper ──────────────────────────────────────────────────────────
+  const showToast = useCallback((msg, type = "ok", ms = 3000) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast(msg);
-    setToastType(type);
+    setToast(msg); setToastType(type);
     toastTimer.current = setTimeout(() => setToast(null), ms);
-  };
+  }, []);
 
+  // ── Beep on new alert ─────────────────────────────────────────────────────
+  const playBeep = useCallback(() => {
+    try {
+      const ctx  = new AudioContext();
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = 880; osc.type = "square";
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+      osc.start(); osc.stop(ctx.currentTime + 0.4);
+    } catch (_) {}
+  }, []);
+
+  // ── Poll backend every 2 s ────────────────────────────────────────────────
   const fetchAll = useCallback(async () => {
     try {
       const [s, h, l, a] = await Promise.all([
-        fetch(`${API}/stats`).then(r => r.json()),
-        fetch(`${API}/history`).then(r => r.json()),
-        fetch(`${API}/logs`).then(r => r.json()),
-        fetch(`${API}/alerts`).then(r => r.json()),
+        fetch(`${API_BASE}/stats`).then(r => r.json()),
+        fetch(`${API_BASE}/history`).then(r => r.json()),
+        fetch(`${API_BASE}/logs`).then(r => r.json()),
+        fetch(`${API_BASE}/alerts`).then(r => r.json()),
       ]);
       setStats(s);
       setHistory(h.history || []);
       setLogs((l.logs || []).reverse());
-      setAlertImgs((a.alerts || []).map(f => `${API}/alerts/${f}?t=${Date.now()}`));
+      // Image URLs always direct to backend (never through proxy)
+      setAlertImgs(
+        (a.alerts || []).map(f => `${STREAM_BASE}/alerts/${f}?t=${Date.now()}`)
+      );
       if (s.alerts > prevAlerts.current && prevAlerts.current !== 0) {
         showToast("⚠ WEAPON DETECTED — Alert saved!", "warn", 4000);
+        playBeep();
       }
       prevAlerts.current = s.alerts;
-    } catch {
-      /* backend not ready yet */
-    }
-  }, []);
+    } catch { /* backend not yet ready */ }
+  }, [playBeep, showToast]);
 
   useEffect(() => {
     fetchAll();
@@ -56,20 +81,27 @@ export default function App() {
     };
   }, [fetchAll]);
 
+  // Auto-scroll logs to top (newest first)
   useEffect(() => {
     if (logsRef.current) logsRef.current.scrollTop = 0;
   }, [logs]);
 
-  // ── Refresh: POST /refresh → force stream reload by incrementing key ──
+  // ── Stream helpers ────────────────────────────────────────────────────────
+  const reloadStream = useCallback(() => {
+    setStreamError(false);
+    setStreamKey(k => k + 1);
+  }, []);
+
+  // Stream URL: always direct to backend on port 8000 — never through Vite proxy
+  const streamSrc = `${STREAM_BASE}/video?k=${streamKey}`;
+
+  // ── Refresh button ────────────────────────────────────────────────────────
   const handleRefresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      const res = await fetch(`${API}/refresh`, { method: "POST" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      // Force full stream remount
-      setStreamError(false);
-      setStreamKey(k => k + 1);
+      await fetch(`${API_BASE}/refresh`, { method: "POST" });
+      reloadStream();
       await fetchAll();
       showToast("✓ System refreshed", "ok");
     } catch {
@@ -79,33 +111,34 @@ export default function App() {
     }
   };
 
+  // ── Clear alerts ──────────────────────────────────────────────────────────
   const clearAlerts = async () => {
     if (!confirm("Clear all alerts and detections?")) return;
     try {
-      await fetch(`${API}/alerts/clear`, { method: "DELETE" });
+      await fetch(`${API_BASE}/alerts/clear`, { method: "DELETE" });
       await fetchAll();
       showToast("🗑 All alerts cleared", "ok");
-    } catch {
-      showToast("✗ Clear failed", "err");
-    }
+    } catch { showToast("✗ Clear failed", "err"); }
   };
 
+  // ── Helpers ───────────────────────────────────────────────────────────────
   const fmtUptime = s => {
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
     return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
   };
 
+  // Extract just the filename from an image path (handles Windows + Unix paths)
   const imgFilename = p =>
     p ? p.replace(/^.*[/\\]alerts[/\\]/,"").replace(/^alerts[/\\]/,"").split("?")[0] : null;
 
   const isLive = stats.status === "ACTIVE";
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="app">
-      {/* Toast */}
-      {toast && (
-        <div className={`toast toast-${toastType}`}>{toast}</div>
-      )}
+
+      {/* Toast notification */}
+      {toast && <div className={`toast toast-${toastType}`}>{toast}</div>}
 
       {/* Lightbox */}
       {lightbox && (
@@ -118,7 +151,7 @@ export default function App() {
       {/* ── Header ── */}
       <header className="header">
         <div className="header-left">
-          <div className={`status-dot ${isLive ? "live" : ""}`} />
+          <div className={`status-dot${isLive ? " live" : ""}`} />
           <span className="brand">SENTINEL<span className="brand-ai">AI</span></span>
           <span className="brand-sub">Weapon Detection System</span>
         </div>
@@ -138,7 +171,6 @@ export default function App() {
             className={`btn-refresh${refreshing ? " refreshing" : ""}`}
             onClick={handleRefresh}
             disabled={refreshing}
-            title="Reset heatmap & reload video stream"
           >
             <span className={`refresh-icon${refreshing ? " spin" : ""}`}>↺</span>
             <span className="refresh-label">{refreshing ? "…" : "Refresh"}</span>
@@ -148,15 +180,26 @@ export default function App() {
 
       {/* ── Nav ── */}
       <nav className="nav">
-        {[["live","📡 Live"],["history","📋 Detections"],["evidence","🖼 Evidence"],["logs","📄 Logs"]].map(([k,label]) => (
-          <button key={k} className={`nav-btn${tab===k?" active":""}`} onClick={() => setTab(k)}>{label}</button>
+        {[
+          ["live",     "📡 Live"],
+          ["history",  "📋 Detections"],
+          ["evidence", "🖼 Evidence"],
+          ["logs",     "📄 Logs"],
+        ].map(([k, label]) => (
+          <button
+            key={k}
+            className={`nav-btn${tab === k ? " active" : ""}`}
+            onClick={() => setTab(k)}
+          >
+            {label}
+          </button>
         ))}
       </nav>
 
       {/* ── Main ── */}
       <main className="main">
 
-        {/* LIVE TAB */}
+        {/* ── LIVE TAB ── */}
         {tab === "live" && (
           <div className="live-layout">
             <div className="feed-wrap">
@@ -169,22 +212,31 @@ export default function App() {
                 <div className="feed-error">
                   <div className="fe-icon">📷</div>
                   <p>Camera feed unavailable</p>
-                  <p className="fe-sub">Make sure backend is running at <b>{API}</b></p>
-                  <button onClick={() => { setStreamError(false); setStreamKey(k => k+1); }}>↺ Retry</button>
+                  <p className="fe-sub">
+                    Make sure backend is running:<br />
+                    <code>python -m uvicorn server:app --reload</code>
+                  </p>
+                  <button onClick={reloadStream}>↺ Retry</button>
                 </div>
               ) : (
+                /* key= forces a real DOM replacement on retry, not just src change */
                 <img
                   key={streamKey}
                   className="feed-img"
-                  src={`${API}/video`}
+                  src={streamSrc}
                   alt="Live stream"
-                  onError={() => setStreamError(true)}
+                  crossOrigin="anonymous"
+                  onError={() => {
+                    setStreamError(true);
+                    setTimeout(reloadStream, 3000);
+                  }}
+                  onLoad={() => setStreamError(false)}
                 />
               )}
 
               <div className="feed-footer">
                 <span>⚙ YOLOv8 WEAPON DETECTION</span>
-                <span>🎯 CONF: 55%</span>
+                <span>🎯 CONF THRESHOLD: {Math.round((stats.avg_conf > 0 ? 45 : 45))}%</span>
               </div>
             </div>
 
@@ -193,7 +245,9 @@ export default function App() {
                 { icon: "🚨", val: stats.alerts,               label: "Total Alerts" },
                 { icon: "🎯", val: `${stats.avg_conf || 0}%`,  label: "Avg Confidence" },
                 { icon: "⏱",  val: fmtUptime(stats.uptime||0), label: "Uptime" },
-                { icon: isLive ? "🟢" : "🔴", val: isLive ? "ACTIVE" : "OFFLINE", label: "System Status", small: true },
+                { icon: isLive ? "🟢" : "🔴",
+                  val: isLive ? "ACTIVE" : "OFFLINE",
+                  label: "System Status", small: true },
               ].map(({ icon, val, label, small }) => (
                 <div className="stat-card" key={label}>
                   <div className="sc-icon">{icon}</div>
@@ -206,11 +260,11 @@ export default function App() {
 
               <div className="recent-list">
                 <div className="rl-header">Recent Detections</div>
-                {history.slice(0,5).map(h => (
+                {history.slice(0, 5).map(h => (
                   <div className="rl-item" key={h.id}>
                     <span className="rl-label">⚠ WEAPON</span>
-                    <span className="rl-conf">{(h.confidence*100).toFixed(0)}%</span>
-                    <span className="rl-ts">{h.timestamp?.slice(11,19)}</span>
+                    <span className="rl-conf">{(h.confidence * 100).toFixed(0)}%</span>
+                    <span className="rl-ts">{h.timestamp?.slice(9, 17)}</span>
                   </div>
                 ))}
                 {history.length === 0 && <div className="rl-empty">No detections yet</div>}
@@ -219,7 +273,7 @@ export default function App() {
           </div>
         )}
 
-        {/* HISTORY TAB */}
+        {/* ── HISTORY TAB ── */}
         {tab === "history" && (
           <div className="table-wrap">
             <div className="table-toolbar">
@@ -229,7 +283,10 @@ export default function App() {
             <div className="table-scroll">
               <table className="det-table">
                 <thead>
-                  <tr><th>#</th><th>Timestamp</th><th>Detection</th><th>Confidence</th><th>Evidence</th></tr>
+                  <tr>
+                    <th>#</th><th>Timestamp</th><th>Detection</th>
+                    <th>Confidence</th><th>Evidence</th>
+                  </tr>
                 </thead>
                 <tbody>
                   {history.map((row, i) => (
@@ -238,13 +295,18 @@ export default function App() {
                       <td className="td-ts">{row.timestamp}</td>
                       <td><span className="badge-weapon">⚠ WEAPON DETECTED</span></td>
                       <td>
-                        <span className={`badge-conf ${row.confidence > 0.8 ? "conf-high" : row.confidence > 0.6 ? "conf-med" : "conf-low"}`}>
-                          {(row.confidence*100).toFixed(1)}%
+                        <span className={`badge-conf ${
+                          row.confidence > 0.8 ? "conf-high" :
+                          row.confidence > 0.6 ? "conf-med" : "conf-low"
+                        }`}>
+                          {(row.confidence * 100).toFixed(1)}%
                         </span>
                       </td>
                       <td>
                         {row.image
-                          ? <button className="btn-view" onClick={() => setLightbox(`${API}/alerts/${imgFilename(row.image)}?t=${Date.now()}`)}>View</button>
+                          ? <button className="btn-view" onClick={() =>
+                              setLightbox(`${STREAM_BASE}/alerts/${imgFilename(row.image)}?t=${Date.now()}`)
+                            }>View</button>
                           : "—"}
                       </td>
                     </tr>
@@ -258,7 +320,7 @@ export default function App() {
           </div>
         )}
 
-        {/* EVIDENCE TAB */}
+        {/* ── EVIDENCE TAB ── */}
         {tab === "evidence" && (
           <div className="evidence-wrap">
             <div className="table-toolbar">
@@ -268,9 +330,14 @@ export default function App() {
             <div className="gallery">
               {alertImgs.map((src, i) => (
                 <div className="gallery-item" key={i} onClick={() => setLightbox(src)}>
-                  <img src={src} alt={`Alert ${i+1}`} loading="lazy" crossOrigin="anonymous"
-                       onError={e => { e.target.style.opacity="0.2"; }} />
-                  <div className="gallery-overlay">⚠ WEAPON<br/>Click to view</div>
+                  <img
+                    src={src}
+                    alt={`Alert ${i + 1}`}
+                    loading="lazy"
+                    crossOrigin="anonymous"
+                    onError={e => { e.target.style.opacity = "0.2"; }}
+                  />
+                  <div className="gallery-overlay">⚠ WEAPON<br />Click to view</div>
                 </div>
               ))}
               {alertImgs.length === 0 && (
@@ -283,7 +350,7 @@ export default function App() {
           </div>
         )}
 
-        {/* LOGS TAB */}
+        {/* ── LOGS TAB ── */}
         {tab === "logs" && (
           <div className="logs-wrap">
             <div className="table-toolbar">
@@ -292,7 +359,13 @@ export default function App() {
             </div>
             <div className="logs-scroll" ref={logsRef}>
               {logs.map((line, i) => (
-                <div key={i} className={`log-line${line.includes("ALERT") ? " log-alert" : line.includes("ERROR") ? " log-error" : ""}`}>
+                <div
+                  key={i}
+                  className={`log-line${
+                    line.includes("ALERT") ? " log-alert" :
+                    line.includes("ERROR") ? " log-error" : ""
+                  }`}
+                >
                   {line}
                 </div>
               ))}
@@ -303,7 +376,7 @@ export default function App() {
       </main>
 
       <footer className="footer">
-        Sentinel AI · YOLOv8 Weapon Detection · {API}
+        Sentinel AI · YOLOv8 Weapon Detection · {STREAM_BASE}
       </footer>
     </div>
   );
