@@ -4,11 +4,19 @@ import "./App.css";
 // ── URL constants ────────────────────────────────────────────────────────────
 // On Vercel: VITE_API_URL is set → use /api proxy (vercel.json rewrites to ngrok)
 // Locally:   VITE_API_URL is not set → use Vite proxy ("") and direct stream
-const IS_DEPLOYED = Boolean(import.meta.env.VITE_API_URL);
-const API_BASE    = IS_DEPLOYED ? "/api" : "";
-const STREAM_BASE = IS_DEPLOYED
-  ? (import.meta.env.VITE_STREAM_URL || "").replace(/\/$/, "")
-  : "http://localhost:8000";
+const API_BASE =
+  (import.meta.env.VITE_API_URL || "http://localhost:8000")
+    .replace(/\/$/, "");
+
+const STREAM_BASE =
+  (import.meta.env.VITE_STREAM_URL || "http://localhost:8000")
+    .replace(/\/$/, "");
+
+const IS_DEPLOYED =
+  window.location.hostname !== "localhost";
+
+console.log("API_BASE =", API_BASE);
+console.log("STREAM_BASE =", STREAM_BASE);
 
 // ngrok header needed for direct stream requests only
 const NGROK_HEADERS = { "ngrok-skip-browser-warning": "true" };
@@ -69,7 +77,9 @@ export default function App() {
         playBeep();
       }
       prevAlerts.current = s.alerts;
-    } catch { /* backend not yet ready */ }
+    } catch (err) {
+  console.error("API ERROR:", err);
+}
   }, [playBeep, showToast]);
 
   useEffect(() => {
