@@ -2,23 +2,22 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 
 // ── URL constants ────────────────────────────────────────────────────────────
-// On Vercel: VITE_API_URL is set → use /api proxy (vercel.json rewrites to ngrok)
-// Locally:   VITE_API_URL is not set → use Vite proxy ("") and direct stream
-const API_BASE =
-  (import.meta.env.VITE_API_URL || "http://localhost:8000")
-    .replace(/\/$/, "");
+// VITE_API_URL  → your ngrok URL, e.g. https://xxxx.ngrok-free.app
+// On Vercel both API calls and the stream are proxied through /api and /stream
+// so the browser never hits ngrok directly (avoids the ngrok interstitial page).
 
-const STREAM_BASE =
-  (import.meta.env.VITE_STREAM_URL || "http://localhost:8000")
-    .replace(/\/$/, "");
+const NGROK_URL = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 
-const IS_DEPLOYED =
-  window.location.hostname !== "localhost";
+// When deployed on Vercel, use relative paths so vercel.json rewrites handle proxying
+// When local, hit the backend directly
+const IS_DEPLOYED = window.location.hostname !== "localhost";
 
-console.log("API_BASE =", API_BASE);
-console.log("STREAM_BASE =", STREAM_BASE);
+const API_BASE    = IS_DEPLOYED ? "/api"    : (NGROK_URL || "http://localhost:8000");
+const STREAM_URL  = IS_DEPLOYED ? "/stream" : (NGROK_URL || "http://localhost:8000") + "/video";
 
-// ngrok header needed for direct stream requests only
+console.log("IS_DEPLOYED =", IS_DEPLOYED);
+console.log("API_BASE    =", API_BASE);
+console.log("STREAM_URL  =", STREAM_URL);
 
 export default function App() {
   const [stats, setStats]         = useState({ alerts: 0, avg_conf: 0, uptime: 0, status: "CONNECTING" });
@@ -32,6 +31,7 @@ export default function App() {
   const [streamError, setStreamError] = useState(false);
   const [refreshing, setRefreshing]   = useState(false);
   const [streamKey, setStreamKey]     = useState(0);
+  const [apiError, setApiError]       = useState(false);
 
   const prevAlerts = useRef(0);
   const logsRef    = useRef(null);
@@ -56,32 +56,48 @@ export default function App() {
     } catch (_) {}
   }, []);
 
+  const apiFetch = useCallback(async (path) => {
+    // path like "/stats", "/history" etc.
+    const url = `${API_BASE}${path}`;
+    const res = await fetch(url, {
+      headers: {
+        // ngrok interstitial bypass header — harmless on localhost
+        "ngrok-skip-browser-warning": "true",
+      }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }, []);
+
   const fetchAll = useCallback(async () => {
     try {
       const [s, h, l, a] = await Promise.all([
-        fetch(`${API_BASE}/stats`).then(r => r.json()),
-        fetch(`${API_BASE}/history`).then(r => r.json()),
-        fetch(`${API_BASE}/logs`).then(r => r.json()),
-        fetch(`${API_BASE}/alerts`).then(r => r.json())
+        apiFetch("/stats"),
+        apiFetch("/history"),
+        apiFetch("/logs"),
+        apiFetch("/alerts"),
       ]);
+      setApiError(false);
       setStats(s);
       setHistory(h.history || []);
       setLogs((l.logs || []).reverse());
-      // Alert images: use STREAM_BASE (direct ngrok) so <img> can load them
+
+      // Alert image URLs: proxied through /api/alert_files/<file> on Vercel
       setAlertImgs(
-        (a.alerts || []).map(
-        f => `${STREAM_BASE}/alert_files/${f}?t=${Date.now()}`
-        )
+        (a.alerts || []).map(f => `${API_BASE}/alert_files/${f}?t=${Date.now()}`)
       );
+
       if (s.alerts > prevAlerts.current && prevAlerts.current !== 0) {
         showToast("⚠ WEAPON DETECTED — Alert saved!", "warn", 4000);
         playBeep();
       }
       prevAlerts.current = s.alerts;
     } catch (err) {
-  console.error("API ERROR:", err);
-}
-  }, [playBeep, showToast]);
+      console.error("API ERROR:", err);
+      setApiError(true);
+      setStats(prev => ({ ...prev, status: "OFFLINE" }));
+    }
+  }, [apiFetch, playBeep, showToast]);
 
   useEffect(() => {
     fetchAll();
@@ -101,16 +117,14 @@ export default function App() {
     setStreamKey(k => k + 1);
   }, []);
 
-  // Stream goes DIRECT to ngrok (bypass vercel proxy — it can't handle MJPEG)
-  const streamSrc = `${STREAM_BASE}/video`;
-
   const handleRefresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
       await fetch(`${API_BASE}/refresh`, {
-        method: "POST"
-    });
+        method: "POST",
+        headers: { "ngrok-skip-browser-warning": "true" },
+      });
       reloadStream();
       await fetchAll();
       showToast("✓ System refreshed", "ok");
@@ -125,7 +139,8 @@ export default function App() {
     if (!confirm("Clear all alerts and detections?")) return;
     try {
       await fetch(`${API_BASE}/alerts/clear`, {
-        method: "DELETE"
+        method: "DELETE",
+        headers: { "ngrok-skip-browser-warning": "true" },
       });
       await fetchAll();
       showToast("🗑 All alerts cleared", "ok");
@@ -170,7 +185,7 @@ export default function App() {
             <span className="pill-value">{fmtUptime(stats.uptime || 0)}</span>
           </div>
           <div className={`status-badge ${isLive ? "badge-live" : "badge-off"}`}>
-            {isLive ? "● LIVE" : "○ OFFLINE"}
+            {isLive ? "● LIVE" : apiError ? "○ OFFLINE" : "○ CONNECTING"}
           </div>
           <button
             className={`btn-refresh${refreshing ? " refreshing" : ""}`}
@@ -200,6 +215,15 @@ export default function App() {
         ))}
       </nav>
 
+      {apiError && (
+        <div className="api-error-banner">
+          ⚠ Cannot reach backend. Make sure your local server is running and
+          {IS_DEPLOYED
+            ? " VITE_API_URL is set to your current ngrok URL in Vercel environment variables."
+            : " the FastAPI server is running on localhost:8000."}
+        </div>
+      )}
+
       <main className="main">
 
         {tab === "live" && (
@@ -210,38 +234,33 @@ export default function App() {
                 <span className={`rec-dot${isLive ? " rec-on" : ""}`}>● REC</span>
               </div>
 
-        {streamError ? (
-          <div className="feed-error">
-            <div className="fe-icon">📷</div>
-
-            <p>Camera feed unavailable</p>
-
-            <p className="fe-sub">
-              Stream URL:
-              <br />
-              <code>{streamSrc}</code>
-            </p>
-
-            <button onClick={reloadStream}>↺ Retry</button>
-        </div>
-      ) : (
-        <img
-          key={streamKey}
-          className="feed-img"
-          src={streamSrc}
-          alt="Live stream"
-          onError={(e) => {
-            console.error("STREAM FAILED");
-            console.error("URL:", streamSrc);
-            console.error(e);
-            setStreamError(true);
-        }}
-          onLoad={() => {
-            console.log("STREAM CONNECTED");
-            setStreamError(false);
-          }}
-        />
-      )}
+              {streamError ? (
+                <div className="feed-error">
+                  <div className="fe-icon">📷</div>
+                  <p>Camera feed unavailable</p>
+                  <p className="fe-sub">
+                    {IS_DEPLOYED
+                      ? "Make sure VITE_API_URL is set to your current ngrok URL in Vercel settings, then redeploy."
+                      : `Stream URL: ${STREAM_URL}`}
+                  </p>
+                  <button onClick={reloadStream}>↺ Retry</button>
+                </div>
+              ) : (
+                <img
+                  key={streamKey}
+                  className="feed-img"
+                  src={STREAM_URL}
+                  alt="Live stream"
+                  onError={(e) => {
+                    console.error("STREAM FAILED:", STREAM_URL, e);
+                    setStreamError(true);
+                  }}
+                  onLoad={() => {
+                    console.log("STREAM CONNECTED:", STREAM_URL);
+                    setStreamError(false);
+                  }}
+                />
+              )}
 
               <div className="feed-footer">
                 <span>⚙ YOLOv8 WEAPON DETECTION</span>
@@ -255,7 +274,7 @@ export default function App() {
                 { icon: "🎯", val: `${stats.avg_conf || 0}%`,  label: "Avg Confidence" },
                 { icon: "⏱",  val: fmtUptime(stats.uptime||0), label: "Uptime" },
                 { icon: isLive ? "🟢" : "🔴",
-                  val: isLive ? "ACTIVE" : "OFFLINE",
+                  val: isLive ? "ACTIVE" : apiError ? "OFFLINE" : "CONNECTING",
                   label: "System Status", small: true },
               ].map(({ icon, val, label, small }) => (
                 <div className="stat-card" key={label}>
@@ -314,7 +333,7 @@ export default function App() {
                         {row.image
                           ? <button className="btn-view" onClick={() =>
                               setLightbox(
-                                `${STREAM_BASE}/alert_files/${imgFilename(row.image)}?t=${Date.now()}`
+                                `${API_BASE}/alert_files/${imgFilename(row.image)}?t=${Date.now()}`
                               )
                             }>View</button>
                           : "—"}
@@ -383,7 +402,10 @@ export default function App() {
       </main>
 
       <footer className="footer">
-        Sentinel AI · YOLOv8 Weapon Detection · {IS_DEPLOYED ? "Vercel+ngrok" : "localhost:8000"}
+        Sentinel AI · YOLOv8 Weapon Detection ·{" "}
+        {IS_DEPLOYED
+          ? `Vercel + ngrok → ${NGROK_URL || "⚠ VITE_API_URL not set"}`
+          : "localhost:8000"}
       </footer>
     </div>
   );

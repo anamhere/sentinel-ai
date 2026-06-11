@@ -1,8 +1,12 @@
 {
   "rewrites": [
     {
+      "source": "/stream",
+      "destination": "/api/stream"
+    },
+    {
       "source": "/api/:path*",
-      "destination": "https://copious-marxism-sneeze.ngrok-free.dev/:path*"
+      "destination": "/api/proxy"
     }
   ]
 }
