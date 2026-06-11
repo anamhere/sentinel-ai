@@ -2,14 +2,16 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 
 // ── URL constants ────────────────────────────────────────────────────────────
-// On Vercel: all requests go through /api proxy (vercel.json rewrites to ngrok)
-// Locally:   API goes through Vite proxy (""), stream goes direct to localhost
-const IS_VERCEL   = Boolean(import.meta.env.VITE_API_URL);
-const API_BASE    = IS_VERCEL ? "/api" : "";
-const STREAM_BASE = IS_VERCEL ? "/api" : "http://localhost:8000";
+// On Vercel: VITE_API_URL is set → use /api proxy (vercel.json rewrites to ngrok)
+// Locally:   VITE_API_URL is not set → use Vite proxy ("") and direct stream
+const IS_DEPLOYED = Boolean(import.meta.env.VITE_API_URL);
+const API_BASE    = IS_DEPLOYED ? "/api" : "";
+const STREAM_BASE = IS_DEPLOYED
+  ? (import.meta.env.VITE_STREAM_URL || "").replace(/\/$/, "")
+  : "http://localhost:8000";
 
-// ngrok header only needed locally (on Vercel the proxy handles it server-side)
-const NGROK_HEADERS = IS_VERCEL ? {} : { "ngrok-skip-browser-warning": "true" };
+// ngrok header needed for direct stream requests only
+const NGROK_HEADERS = { "ngrok-skip-browser-warning": "true" };
 
 export default function App() {
   const [stats, setStats]         = useState({ alerts: 0, avg_conf: 0, uptime: 0, status: "CONNECTING" });
@@ -58,6 +60,7 @@ export default function App() {
       setStats(s);
       setHistory(h.history || []);
       setLogs((l.logs || []).reverse());
+      // Alert images: use STREAM_BASE (direct ngrok) so <img> can load them
       setAlertImgs(
         (a.alerts || []).map(f => `${STREAM_BASE}/alerts/${f}?t=${Date.now()}`)
       );
@@ -87,6 +90,7 @@ export default function App() {
     setStreamKey(k => k + 1);
   }, []);
 
+  // Stream goes DIRECT to ngrok (bypass vercel proxy — it can't handle MJPEG)
   const streamSrc = `${STREAM_BASE}/video?k=${streamKey}`;
 
   const handleRefresh = async () => {
@@ -353,7 +357,7 @@ export default function App() {
       </main>
 
       <footer className="footer">
-        Sentinel AI · YOLOv8 Weapon Detection · {IS_VERCEL ? "Vercel+ngrok" : "localhost:8000"}
+        Sentinel AI · YOLOv8 Weapon Detection · {IS_DEPLOYED ? "Vercel+ngrok" : "localhost:8000"}
       </footer>
     </div>
   );
