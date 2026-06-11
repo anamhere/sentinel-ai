@@ -544,9 +544,12 @@ def video_feed():
     return StreamingResponse(
         frame_generator(),
         media_type="multipart/x-mixed-replace; boundary=frame",
-        headers={"Cache-Control": "no-cache, no-store",
-                 "Pragma": "no-cache",
-                 "Access-Control-Allow-Origin": "*"}
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "Pragma": "no-cache",
+            "Access-Control-Allow-Origin": "*",
+            "ngrok-skip-browser-warning": "true"
+        }
     )
 
 @app.get("/stats")
@@ -636,3 +639,13 @@ def clear_alerts():
         return {"cleared":True}
     except Exception as e:
         return {"cleared":False,"error":str(e)}
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "server:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False
+    )

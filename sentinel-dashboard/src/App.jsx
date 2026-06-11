@@ -19,7 +19,6 @@ console.log("API_BASE =", API_BASE);
 console.log("STREAM_BASE =", STREAM_BASE);
 
 // ngrok header needed for direct stream requests only
-const NGROK_HEADERS = { "ngrok-skip-browser-warning": "true" };
 
 export default function App() {
   const [stats, setStats]         = useState({ alerts: 0, avg_conf: 0, uptime: 0, status: "CONNECTING" });
@@ -60,17 +59,19 @@ export default function App() {
   const fetchAll = useCallback(async () => {
     try {
       const [s, h, l, a] = await Promise.all([
-        fetch(`${API_BASE}/stats`,   { headers: NGROK_HEADERS }).then(r => r.json()),
-        fetch(`${API_BASE}/history`, { headers: NGROK_HEADERS }).then(r => r.json()),
-        fetch(`${API_BASE}/logs`,    { headers: NGROK_HEADERS }).then(r => r.json()),
-        fetch(`${API_BASE}/alerts`,  { headers: NGROK_HEADERS }).then(r => r.json()),
+        fetch(`${API_BASE}/stats`).then(r => r.json()),
+        fetch(`${API_BASE}/history`).then(r => r.json()),
+        fetch(`${API_BASE}/logs`).then(r => r.json()),
+        fetch(`${API_BASE}/alerts`).then(r => r.json())
       ]);
       setStats(s);
       setHistory(h.history || []);
       setLogs((l.logs || []).reverse());
       // Alert images: use STREAM_BASE (direct ngrok) so <img> can load them
       setAlertImgs(
-        (a.alerts || []).map(f => `${STREAM_BASE}/alerts/${f}?t=${Date.now()}`)
+        (a.alerts || []).map(
+        f => `${STREAM_BASE}/alert_files/${f}?t=${Date.now()}`
+        )
       );
       if (s.alerts > prevAlerts.current && prevAlerts.current !== 0) {
         showToast("⚠ WEAPON DETECTED — Alert saved!", "warn", 4000);
@@ -101,13 +102,15 @@ export default function App() {
   }, []);
 
   // Stream goes DIRECT to ngrok (bypass vercel proxy — it can't handle MJPEG)
-  const streamSrc = `${STREAM_BASE}/video?k=${streamKey}`;
+  const streamSrc = `${STREAM_BASE}/video`;
 
   const handleRefresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await fetch(`${API_BASE}/refresh`, { method: "POST", headers: NGROK_HEADERS });
+      await fetch(`${API_BASE}/refresh`, {
+        method: "POST"
+    });
       reloadStream();
       await fetchAll();
       showToast("✓ System refreshed", "ok");
@@ -121,7 +124,9 @@ export default function App() {
   const clearAlerts = async () => {
     if (!confirm("Clear all alerts and detections?")) return;
     try {
-      await fetch(`${API_BASE}/alerts/clear`, { method: "DELETE", headers: NGROK_HEADERS });
+      await fetch(`${API_BASE}/alerts/clear`, {
+        method: "DELETE"
+      });
       await fetchAll();
       showToast("🗑 All alerts cleared", "ok");
     } catch { showToast("✗ Clear failed", "err"); }
@@ -205,29 +210,38 @@ export default function App() {
                 <span className={`rec-dot${isLive ? " rec-on" : ""}`}>● REC</span>
               </div>
 
-              {streamError ? (
-                <div className="feed-error">
-                  <div className="fe-icon">📷</div>
-                  <p>Camera feed unavailable</p>
-                  <p className="fe-sub">
-                    Make sure backend is running:<br />
-                    <code>uvicorn server:app --host 0.0.0.0 --port 8000 --reload</code>
-                  </p>
-                  <button onClick={reloadStream}>↺ Retry</button>
-                </div>
-              ) : (
-                <img
-                  key={streamKey}
-                  className="feed-img"
-                  src={streamSrc}
-                  alt="Live stream"
-                  onError={() => {
-                    setStreamError(true);
-                    setTimeout(reloadStream, 3000);
-                  }}
-                  onLoad={() => setStreamError(false)}
-                />
-              )}
+        {streamError ? (
+          <div className="feed-error">
+            <div className="fe-icon">📷</div>
+
+            <p>Camera feed unavailable</p>
+
+            <p className="fe-sub">
+              Stream URL:
+              <br />
+              <code>{streamSrc}</code>
+            </p>
+
+            <button onClick={reloadStream}>↺ Retry</button>
+        </div>
+      ) : (
+        <img
+          key={streamKey}
+          className="feed-img"
+          src={streamSrc}
+          alt="Live stream"
+          onError={(e) => {
+            console.error("STREAM FAILED");
+            console.error("URL:", streamSrc);
+            console.error(e);
+            setStreamError(true);
+        }}
+          onLoad={() => {
+            console.log("STREAM CONNECTED");
+            setStreamError(false);
+          }}
+        />
+      )}
 
               <div className="feed-footer">
                 <span>⚙ YOLOv8 WEAPON DETECTION</span>
@@ -299,7 +313,9 @@ export default function App() {
                       <td>
                         {row.image
                           ? <button className="btn-view" onClick={() =>
-                              setLightbox(`${STREAM_BASE}/alerts/${imgFilename(row.image)}?t=${Date.now()}`)
+                              setLightbox(
+                                `${STREAM_BASE}/alert_files/${imgFilename(row.image)}?t=${Date.now()}`
+                              )
                             }>View</button>
                           : "—"}
                       </td>
