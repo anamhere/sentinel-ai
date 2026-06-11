@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # ─────────────────────────────────────────────
 # CONFIG — tuned for speed + accuracy
@@ -508,6 +509,15 @@ async def lifespan(application: FastAPI):
 app = FastAPI(title="Sentinel AI", version="5.2", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# ── ngrok warning bypass ──
+class NgrokHeaderMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["ngrok-skip-browser-warning"] = "true"
+        return response
+
+app.add_middleware(NgrokHeaderMiddleware)
 
 if os.path.exists("alerts"):
     app.mount("/alert_files", StaticFiles(directory="alerts"), name="alert_files")
