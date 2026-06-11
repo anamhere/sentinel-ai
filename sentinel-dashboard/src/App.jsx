@@ -2,20 +2,14 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 
 // ── URL constants ────────────────────────────────────────────────────────────
-// API calls (stats, history, alerts, logs) can go through Vite proxy OR direct.
-// MJPEG stream MUST go direct to the backend — never through Vite proxy, which
-// buffers the multipart stream and causes visible lag / freezing.
-const API_BASE    = (import.meta.env.VITE_API_URL  || "").replace(/\/$/, "");
-const STREAM_BASE = (import.meta.env.VITE_STREAM_URL
-                 || import.meta.env.VITE_API_URL
-                 || "http://localhost:8000").replace(/\/$/, "");                        // always direct
+// On Vercel: all requests go through /api proxy (vercel.json rewrites to ngrok)
+// Locally:   API goes through Vite proxy (""), stream goes direct to localhost
+const IS_VERCEL   = Boolean(import.meta.env.VITE_API_URL);
+const API_BASE    = IS_VERCEL ? "/api" : "";
+const STREAM_BASE = IS_VERCEL ? "/api" : "http://localhost:8000";
 
-// ── ngrok bypass header ───────────────────────────────────────────────────────
-// When VITE_API_URL points at an ngrok tunnel, ngrok shows an HTML interstitial
-// warning page instead of the real response unless this header is present.
-// This only affects fetch()/XHR — <img>/<video> tags can't send custom headers,
-// see note near the stream/image code below.
-const NGROK_HEADERS = { "ngrok-skip-browser-warning": "true" };
+// ngrok header only needed locally (on Vercel the proxy handles it server-side)
+const NGROK_HEADERS = IS_VERCEL ? {} : { "ngrok-skip-browser-warning": "true" };
 
 export default function App() {
   const [stats, setStats]         = useState({ alerts: 0, avg_conf: 0, uptime: 0, status: "CONNECTING" });
@@ -34,14 +28,12 @@ export default function App() {
   const logsRef    = useRef(null);
   const toastTimer = useRef(null);
 
-  // ── Toast helper ──────────────────────────────────────────────────────────
   const showToast = useCallback((msg, type = "ok", ms = 3000) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast(msg); setToastType(type);
     toastTimer.current = setTimeout(() => setToast(null), ms);
   }, []);
 
-  // ── Beep on new alert ─────────────────────────────────────────────────────
   const playBeep = useCallback(() => {
     try {
       const ctx  = new AudioContext();
@@ -55,7 +47,6 @@ export default function App() {
     } catch (_) {}
   }, []);
 
-  // ── Poll backend every 2 s ────────────────────────────────────────────────
   const fetchAll = useCallback(async () => {
     try {
       const [s, h, l, a] = await Promise.all([
@@ -67,7 +58,6 @@ export default function App() {
       setStats(s);
       setHistory(h.history || []);
       setLogs((l.logs || []).reverse());
-      // Image URLs always direct to backend (never through proxy)
       setAlertImgs(
         (a.alerts || []).map(f => `${STREAM_BASE}/alerts/${f}?t=${Date.now()}`)
       );
@@ -88,25 +78,17 @@ export default function App() {
     };
   }, [fetchAll]);
 
-  // Auto-scroll logs to top (newest first)
   useEffect(() => {
     if (logsRef.current) logsRef.current.scrollTop = 0;
   }, [logs]);
 
-  // ── Stream helpers ────────────────────────────────────────────────────────
   const reloadStream = useCallback(() => {
     setStreamError(false);
     setStreamKey(k => k + 1);
   }, []);
 
-  // Stream URL: always direct to backend on port 8000 — never through Vite proxy
-  // NOTE: <img> tags can't send the ngrok-skip-browser-warning header, so if
-  // STREAM_BASE is an ngrok URL, open it once in your browser and click
-  // "Visit Site" — ngrok sets a bypass cookie for that domain which the
-  // browser will then attach to this <img> request too.
   const streamSrc = `${STREAM_BASE}/video?k=${streamKey}`;
 
-  // ── Refresh button ────────────────────────────────────────────────────────
   const handleRefresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
@@ -122,7 +104,6 @@ export default function App() {
     }
   };
 
-  // ── Clear alerts ──────────────────────────────────────────────────────────
   const clearAlerts = async () => {
     if (!confirm("Clear all alerts and detections?")) return;
     try {
@@ -132,26 +113,21 @@ export default function App() {
     } catch { showToast("✗ Clear failed", "err"); }
   };
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
   const fmtUptime = s => {
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
     return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
   };
 
-  // Extract just the filename from an image path (handles Windows + Unix paths)
   const imgFilename = p =>
     p ? p.replace(/^.*[/\\]alerts[/\\]/,"").replace(/^alerts[/\\]/,"").split("?")[0] : null;
 
   const isLive = stats.status === "ACTIVE";
 
-  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="app">
 
-      {/* Toast notification */}
       {toast && <div className={`toast toast-${toastType}`}>{toast}</div>}
 
-      {/* Lightbox */}
       {lightbox && (
         <div className="lightbox" onClick={() => setLightbox(null)}>
           <img src={lightbox} alt="Evidence" />
@@ -159,7 +135,6 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Header ── */}
       <header className="header">
         <div className="header-left">
           <div className={`status-dot${isLive ? " live" : ""}`} />
@@ -189,7 +164,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── Nav ── */}
       <nav className="nav">
         {[
           ["live",     "📡 Live"],
@@ -207,10 +181,8 @@ export default function App() {
         ))}
       </nav>
 
-      {/* ── Main ── */}
       <main className="main">
 
-        {/* ── LIVE TAB ── */}
         {tab === "live" && (
           <div className="live-layout">
             <div className="feed-wrap">
@@ -225,12 +197,11 @@ export default function App() {
                   <p>Camera feed unavailable</p>
                   <p className="fe-sub">
                     Make sure backend is running:<br />
-                    <code>python -m uvicorn server:app --reload</code>
+                    <code>uvicorn server:app --host 0.0.0.0 --port 8000 --reload</code>
                   </p>
                   <button onClick={reloadStream}>↺ Retry</button>
                 </div>
               ) : (
-                /* key= forces a real DOM replacement on retry, not just src change */
                 <img
                   key={streamKey}
                   className="feed-img"
@@ -246,7 +217,7 @@ export default function App() {
 
               <div className="feed-footer">
                 <span>⚙ YOLOv8 WEAPON DETECTION</span>
-                <span>🎯 CONF THRESHOLD: {Math.round((stats.avg_conf > 0 ? 45 : 45))}%</span>
+                <span>🎯 CONF THRESHOLD: 45%</span>
               </div>
             </div>
 
@@ -283,7 +254,6 @@ export default function App() {
           </div>
         )}
 
-        {/* ── HISTORY TAB ── */}
         {tab === "history" && (
           <div className="table-wrap">
             <div className="table-toolbar">
@@ -330,7 +300,6 @@ export default function App() {
           </div>
         )}
 
-        {/* ── EVIDENCE TAB ── */}
         {tab === "evidence" && (
           <div className="evidence-wrap">
             <div className="table-toolbar">
@@ -359,7 +328,6 @@ export default function App() {
           </div>
         )}
 
-        {/* ── LOGS TAB ── */}
         {tab === "logs" && (
           <div className="logs-wrap">
             <div className="table-toolbar">
@@ -385,7 +353,7 @@ export default function App() {
       </main>
 
       <footer className="footer">
-        Sentinel AI · YOLOv8 Weapon Detection · {STREAM_BASE}
+        Sentinel AI · YOLOv8 Weapon Detection · {IS_VERCEL ? "Vercel+ngrok" : "localhost:8000"}
       </footer>
     </div>
   );
