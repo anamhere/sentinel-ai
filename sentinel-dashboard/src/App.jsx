@@ -1,19 +1,24 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 
-// ── URL constants ────────────────────────────────────────────────────────────
-// VITE_API_URL  → your ngrok URL, e.g. https://xxxx.ngrok-free.app
-// On Vercel both API calls and the stream are proxied through /api and /stream
-// so the browser never hits ngrok directly (avoids the ngrok interstitial page).
+// ── Architecture ─────────────────────────────────────────────────────────────
+// API calls  → /api/* → Vercel proxy → Cloudflare tunnel → local backend
+// Stream     → DIRECT to Cloudflare tunnel (bypasses Vercel timeout limit)
+//
+// On Vercel: VITE_API_URL is blank (uses /api proxy)
+//            VITE_STREAM_URL = your cloudflare tunnel URL (direct stream)
+// Local dev: both blank → localhost:8000
 
-const NGROK_URL = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
-
-// When deployed on Vercel, use relative paths so vercel.json rewrites handle proxying
-// When local, hit the backend directly
 const IS_DEPLOYED = window.location.hostname !== "localhost";
 
-const API_BASE    = IS_DEPLOYED ? "/api"    : (NGROK_URL || "http://localhost:8000");
-const STREAM_URL  = IS_DEPLOYED ? "/stream" : (NGROK_URL || "http://localhost:8000") + "/video";
+// API: use Vercel proxy on deployed, direct on local
+const API_BASE = IS_DEPLOYED
+  ? "/api"
+  : (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "");
+
+// Stream: ALWAYS direct to tunnel (never through Vercel proxy)
+const STREAM_BASE = (import.meta.env.VITE_STREAM_URL || "http://localhost:8000").replace(/\/$/, "");
+const STREAM_URL  = `${STREAM_BASE}/video`;
 
 console.log("IS_DEPLOYED =", IS_DEPLOYED);
 console.log("API_BASE    =", API_BASE);
@@ -57,13 +62,9 @@ export default function App() {
   }, []);
 
   const apiFetch = useCallback(async (path) => {
-    // path like "/stats", "/history" etc.
     const url = `${API_BASE}${path}`;
     const res = await fetch(url, {
-      headers: {
-        // ngrok interstitial bypass header — harmless on localhost
-        "ngrok-skip-browser-warning": "true",
-      }
+      headers: { "ngrok-skip-browser-warning": "true" }
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
@@ -81,12 +82,10 @@ export default function App() {
       setStats(s);
       setHistory(h.history || []);
       setLogs((l.logs || []).reverse());
-
-      // Alert image URLs: proxied through /api/alert_files/<file> on Vercel
+      // Alert images: direct from tunnel (not proxied) so they load fast
       setAlertImgs(
-        (a.alerts || []).map(f => `${API_BASE}/alert_files/${f}?t=${Date.now()}`)
+        (a.alerts || []).map(f => `${STREAM_BASE}/alert_files/${f}?t=${Date.now()}`)
       );
-
       if (s.alerts > prevAlerts.current && prevAlerts.current !== 0) {
         showToast("⚠ WEAPON DETECTED — Alert saved!", "warn", 4000);
         playBeep();
@@ -219,7 +218,7 @@ export default function App() {
         <div className="api-error-banner">
           ⚠ Cannot reach backend. Make sure your local server is running and
           {IS_DEPLOYED
-            ? " VITE_API_URL is set to your current ngrok URL in Vercel environment variables."
+            ? " NGROK_URL is set to your current tunnel URL in Vercel environment variables."
             : " the FastAPI server is running on localhost:8000."}
         </div>
       )}
@@ -240,7 +239,7 @@ export default function App() {
                   <p>Camera feed unavailable</p>
                   <p className="fe-sub">
                     {IS_DEPLOYED
-                      ? "Make sure VITE_API_URL is set to your current ngrok URL in Vercel settings, then redeploy."
+                      ? "Make sure VITE_STREAM_URL is set to your Cloudflare tunnel URL in Vercel settings."
                       : `Stream URL: ${STREAM_URL}`}
                   </p>
                   <button onClick={reloadStream}>↺ Retry</button>
@@ -333,7 +332,7 @@ export default function App() {
                         {row.image
                           ? <button className="btn-view" onClick={() =>
                               setLightbox(
-                                `${API_BASE}/alert_files/${imgFilename(row.image)}?t=${Date.now()}`
+                                `${STREAM_BASE}/alert_files/${imgFilename(row.image)}?t=${Date.now()}`
                               )
                             }>View</button>
                           : "—"}
@@ -402,10 +401,7 @@ export default function App() {
       </main>
 
       <footer className="footer">
-        Sentinel AI · YOLOv8 Weapon Detection ·{" "}
-        {IS_DEPLOYED
-          ? `Vercel + ngrok → ${NGROK_URL || "⚠ VITE_API_URL not set"}`
-          : "localhost:8000"}
+        Sentinel AI · YOLOv8 · Stream: {STREAM_BASE || "localhost"} · API: {IS_DEPLOYED ? "Vercel proxy" : "localhost"}
       </footer>
     </div>
   );
