@@ -154,7 +154,7 @@ export default function App() {
       {/* Lightbox */}
       {lightbox && (
         <div className="lightbox" onClick={() => setLightbox(null)}>
-          <img src={lightbox} alt="Evidence" crossOrigin="anonymous" />
+          <img src={lightbox} alt="Evidence" />
           <button className="lb-close" onClick={e => { e.stopPropagation(); setLightbox(null); }}>✕</button>
         </div>
       )}
@@ -236,7 +236,6 @@ export default function App() {
                   className="feed-img"
                   src={streamSrc}
                   alt="Live stream"
-                  crossOrigin="anonymous"
                   onError={() => {
                     setStreamError(true);
                     setTimeout(reloadStream, 3000);
@@ -345,7 +344,6 @@ export default function App() {
                     src={src}
                     alt={`Alert ${i + 1}`}
                     loading="lazy"
-                    crossOrigin="anonymous"
                     onError={e => { e.target.style.opacity = "0.2"; }}
                   />
                   <div className="gallery-overlay">⚠ WEAPON<br />Click to view</div>
