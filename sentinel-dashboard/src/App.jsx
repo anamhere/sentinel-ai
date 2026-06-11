@@ -10,6 +10,13 @@ const STREAM_BASE = import.meta.env.VITE_STREAM_URL
                  || import.meta.env.VITE_API_URL
                  || "http://localhost:8000";                        // always direct
 
+// ── ngrok bypass header ───────────────────────────────────────────────────────
+// When VITE_API_URL points at an ngrok tunnel, ngrok shows an HTML interstitial
+// warning page instead of the real response unless this header is present.
+// This only affects fetch()/XHR — <img>/<video> tags can't send custom headers,
+// see note near the stream/image code below.
+const NGROK_HEADERS = { "ngrok-skip-browser-warning": "true" };
+
 export default function App() {
   const [stats, setStats]         = useState({ alerts: 0, avg_conf: 0, uptime: 0, status: "CONNECTING" });
   const [history, setHistory]     = useState([]);
@@ -52,10 +59,10 @@ export default function App() {
   const fetchAll = useCallback(async () => {
     try {
       const [s, h, l, a] = await Promise.all([
-        fetch(`${API_BASE}/stats`).then(r => r.json()),
-        fetch(`${API_BASE}/history`).then(r => r.json()),
-        fetch(`${API_BASE}/logs`).then(r => r.json()),
-        fetch(`${API_BASE}/alerts`).then(r => r.json()),
+        fetch(`${API_BASE}/stats`,   { headers: NGROK_HEADERS }).then(r => r.json()),
+        fetch(`${API_BASE}/history`, { headers: NGROK_HEADERS }).then(r => r.json()),
+        fetch(`${API_BASE}/logs`,    { headers: NGROK_HEADERS }).then(r => r.json()),
+        fetch(`${API_BASE}/alerts`,  { headers: NGROK_HEADERS }).then(r => r.json()),
       ]);
       setStats(s);
       setHistory(h.history || []);
@@ -93,6 +100,10 @@ export default function App() {
   }, []);
 
   // Stream URL: always direct to backend on port 8000 — never through Vite proxy
+  // NOTE: <img> tags can't send the ngrok-skip-browser-warning header, so if
+  // STREAM_BASE is an ngrok URL, open it once in your browser and click
+  // "Visit Site" — ngrok sets a bypass cookie for that domain which the
+  // browser will then attach to this <img> request too.
   const streamSrc = `${STREAM_BASE}/video?k=${streamKey}`;
 
   // ── Refresh button ────────────────────────────────────────────────────────
@@ -100,7 +111,7 @@ export default function App() {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await fetch(`${API_BASE}/refresh`, { method: "POST" });
+      await fetch(`${API_BASE}/refresh`, { method: "POST", headers: NGROK_HEADERS });
       reloadStream();
       await fetchAll();
       showToast("✓ System refreshed", "ok");
@@ -115,7 +126,7 @@ export default function App() {
   const clearAlerts = async () => {
     if (!confirm("Clear all alerts and detections?")) return;
     try {
-      await fetch(`${API_BASE}/alerts/clear`, { method: "DELETE" });
+      await fetch(`${API_BASE}/alerts/clear`, { method: "DELETE", headers: NGROK_HEADERS });
       await fetchAll();
       showToast("🗑 All alerts cleared", "ok");
     } catch { showToast("✗ Clear failed", "err"); }
