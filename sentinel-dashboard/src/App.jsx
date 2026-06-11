@@ -5,10 +5,10 @@ import "./App.css";
 // API calls (stats, history, alerts, logs) can go through Vite proxy OR direct.
 // MJPEG stream MUST go direct to the backend — never through Vite proxy, which
 // buffers the multipart stream and causes visible lag / freezing.
-const API_BASE    = import.meta.env.VITE_API_URL  || "";          // "" = use Vite proxy
-const STREAM_BASE = import.meta.env.VITE_STREAM_URL
+const API_BASE    = (import.meta.env.VITE_API_URL  || "").replace(/\/$/, "");
+const STREAM_BASE = (import.meta.env.VITE_STREAM_URL
                  || import.meta.env.VITE_API_URL
-                 || "http://localhost:8000";                        // always direct
+                 || "http://localhost:8000").replace(/\/$/, "");                        // always direct
 
 // ── ngrok bypass header ───────────────────────────────────────────────────────
 // When VITE_API_URL points at an ngrok tunnel, ngrok shows an HTML interstitial
